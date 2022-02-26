@@ -6,13 +6,13 @@ from flask import request
 from flask import session
 
 import model
-import requests #To access our API
+#To access our API
 
 # -- Initialization section --
 app = Flask(__name__)
 
 ## secret key for session (In production, you would set this key via an environment variable)
-app.secret_key = b'HO\xf8\xff+\n\x1e\\~/;}'
+#app.secret_key = b'HO\xf8\xff+\n\x1e\\~/;}'
 
 # -- Routes section --
 @app.route('/')
