@@ -1,166 +1,82 @@
-from bs4 import BeautifulSoup
-import requests
-from random import random
-from time import sleep
-from email.message import EmailMessage
-from collections import namedtuple
-import smtplib
 import csv
+from datetime import datetime
+from msedge.selenium_tools import Edge, EdgeOptions
+from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException
 
 
-EmailCredentials = namedtuple("EmailCredentials", ['username', 'password', 'sender', 'recipient'])
-
-
-def generate_url(job_title, job_location):
-    url_template = "https://www.indeed.com/jobs?q={}&l={}"
-    url = url_template.format(job_title, job_location)
+def get_url(position, location):
+    """Generate url from position and location"""
+    template = 'https://www.indeed.com/jobs?q={}&l={}'
+    position = position.replace(' ', '+')
+    location = location.replace(' ', '+')
+    url = template.format(position, location)
     return url
 
 
-def save_record_to_csv(record, filepath, create_new_file=False):
-    """Save an individual record to file; set `new_file` flag to `True` to generate new file"""
-    header = ["JobTitle", "Company", "Location", "Salary", "PostDate", "Summary", "JobUrl"]
-    if create_new_file:
-        with open(filepath, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-    else:
-        with open(filepath, mode='a+', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(record)
+def get_record(card):
+    """Extract job data from single card"""
+    job_title = card.find_element_by_class_name('jobtitle').text
+    company = card.find_element_by_class_name('company').text
+    location = card.find_element_by_class_name('location').text
+    post_date = card.find_element_by_class_name('date').text
+    extract_date = datetime.today().strftime('%Y-%m-%d')
+    summary = card.find_element_by_class_name('summary').text
+    job_url = card.find_element_by_class_name('jobtitle').get_attribute('href')
+    return job_title, company, location, post_date, extract_date, summary, job_url
 
 
-def email_jobs_file(filepath, email):
-    """This is currently setup for GMAIL. However, you may need to enable `less secure apps` for
-    your email account if you want this to work. See: https://support.google.com/accounts/answer/6010255?hl=en"""
-    smtp_host = 'smtp.gmail.com'
-    smtp_port = 587
-    with smtplib.SMTP(host=smtp_host, port=smtp_port) as server:
-        server.starttls()
-        server.login(email.username, email.password)
-        message = EmailMessage()
-        message['From'] = email.sender
-        message['To'] = email.recipient
-        message['Subject'] = "Updated jobs file"
-        message['Body'] = "The updated Indeed postings are attached."
-        message.add_attachment(open(filepath, 'r').read(), filename="indeed.csv")
-        server.send_message(message)
+def get_page_records(cards, job_list, url_set):
+    """Extract all cards from the page"""
+    for card in cards:
+        record = get_record(card)
+        # add if job title exists and not duplicate
+        if record[0] and record[-1] not in url_set:
+            job_list.append(record)
+            url_set.add(record[-1])
 
 
-def collect_job_cards_from_page(html):
-    soup = BeautifulSoup(html, 'html.parser')
-    cards = soup.find_all('div', 'jobsearch-SerpJobCard')
-    return cards, soup
+def save_data_to_file(records):
+    """Save data to csv file"""
+    with open('results.csv', 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['JobTitle', 'Company', 'Location', 'PostDate', 'ExtractDate', 'Summary', 'JobUrl'])
+        writer.writerows(records)
 
 
-def sleep_for_random_interval():
-    seconds = random() * 10
-    sleep(seconds)
-
-
-def request_jobs_from_indeed(url):
-    headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,'
-                  'application/signed-exchange;v=b3;q=0.9',
-        'accept-encoding': 'gzip, deflate, br',
-        'accept-language': 'en-US,en;q=0.9',
-        'cache-control': 'max-age=0',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'none',
-        'sec-fetch-user': '?1',
-        'upgrade-insecure-requests': '1',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
-                      'Chrome/87.0.4280.67 Safari/537.36 Edg/87.0.664.47 '
-    }
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.text
-    else:
-        return None
-
-
-def find_next_page(soup):
+def main(position, location):
+    """Run the main program routine"""
+    scraped_jobs = []
+    scraped_urls = set()
+    
+    url = get_url(position, location)
+    
+    # setup web driver
+    options = EdgeOptions()
+    options.use_chromium = True
+    driver = Edge(options=options)
+    driver.implicitly_wait(5)
     try:
-        pagination = soup.find("a", {"aria-label": "Next"}).get("href")
-        return "https://www.indeed.com" + pagination
-    except AttributeError:
-        return None
-
-
-def extract_job_card_data(card):
-    atag = card.h2.a
-    try:
-        job_title = atag.get('title')
-    except AttributeError:
-        job_title = ''
-    try:
-        company = card.find('span', 'company').text.strip()
-    except AttributeError:
-        company = ''
-    try:
-        location = card.find('div', 'recJobLoc').get('data-rc-loc')
-    except AttributeError:
-        location = ''
-    try:
-        job_summary = card.find('div', 'summary').text.strip()
-    except AttributeError:
-        job_summary = ''
-    try:
-        post_date = card.find('span', 'date').text.strip()
-    except AttributeError:
-        post_date = ''
-    try:
-        salary = card.find('span', 'salarytext').text.strip()
-    except AttributeError:
-        salary = ''
-    job_url = 'https://www.indeed.com' + atag.get('href')
-    return job_title, company, location, job_summary, salary, post_date, job_url
-
-
-def main(job_title, job_location, filepath, email=None):
-    unique_jobs = set()  # track job urls to avoid collecting duplicate records
-    print("Starting to scrape indeed for `{}` in `{}`".format(job_title, job_location))
-    url = generate_url(job_title, job_location)
-    save_record_to_csv(None, filepath, create_new_file=True)
-
+        driver.get(url)
+    except:
+        print(url)        
+    
+    # extract the job data
     while True:
-        print(url)
-        html = request_jobs_from_indeed(url)
-        if not html:
+        cards = driver.find_elements_by_class_name('jobsearch-SerpJobCard')
+        get_page_records(cards, scraped_jobs, scraped_urls)
+        try:
+            driver.find_element_by_xpath('//a[@aria-label="Next"]').click()
+        except NoSuchElementException:
             break
-        cards, soup = collect_job_cards_from_page(html)
-        for card in cards:
-            record = extract_job_card_data(card)
-            if not record[-1] in unique_jobs:
-                save_record_to_csv(record, filepath)
-                unique_jobs.add(record[-1])
-        sleep_for_random_interval()
-        url = find_next_page(soup)
-        if not url:
-            break
-    print('Finished collecting {:,d} job postings.'.format(len(unique_jobs)))
-    #if email:
-     #   email_jobs_file(filepath, email)
+        except ElementNotInteractableException:
+            driver.find_element_by_id('popover-x').click()  # to handle job notification popup
+            get_page_records(cards, scraped_jobs, scraped_urls)
+            continue
+
+    # shutdown driver and save file
+    driver.quit()
+    save_data_to_file(scraped_jobs)
 
 
 if __name__ == '__main__':
-    # job search settings
-    title = 'Vocational Jobs'
-    loc = 'New York City NY'
-    path = 'vocational_jobs.csv'
-
-    # include email settings if you want to email the file
-    # currently setup for GMAIL... see notes above.
-    #email_settings = EmailCredentials(
-    #    username='email@gmail.com',
-    #    password='password',
-    #    sender='from@gmail.com',
-    #    recipient='to@gmail.com'
-    #)
-
-    # using email settings
-    # main(title, loc, path, email_settings)
-
-    # without email settings
-    main(title, loc, path)
+    main('python developer', 'charlotte nc')
